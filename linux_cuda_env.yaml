@@ -1,0 +1,63 @@
+name: thesis_cuda_env
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # ✅ Core Python + Jupyter tools
+  - python=3.10
+  - pip
+  - ipython
+  - ipykernel
+  - jupyterlab
+  - matplotlib
+  - seaborn
+  - pandas
+  - numpy
+  - scipy
+  - scikit-learn
+  - tqdm
+  - statsmodels
+
+  # ✅ PyTorch + GPU support (CUDA 12.1)
+  - pytorch=2.5.1
+  - torchvision=0.20.1
+  - torchaudio=2.5.1
+  - pytorch-cuda=12.1
+
+  # ✅ Media & video processing
+  - opencv
+  - ffmpeg
+  - imageio
+  - imageio-ffmpeg
+  - moviepy
+
+  # ✅ Audio processing
+  - soundfile
+
+  # ✅ Utilities
+  - pyyaml
+  - regex
+  - pillow
+  - matplotlib-inline
+  - pycparser
+  - typing_extensions
+  - protobuf
+
+  # ✅ Install via pip (latest + GPU-compat)
+  - pip:
+      - face_alignment
+      - pytorchvideo==0.1.5
+      - detectron2==0.6  # ⚠️ May need to match with correct CUDA version
+      - transformers==4.55.0
+      - timm==1.0.19
+      - fvcore==0.1.5.post20221221
+      - iopath==0.1.9
+      - yacs==0.1.8
+      - tabulate
+      - tensorboard
+      - tensorboard-data-server
+      - safetensors
+      - opencv-python-headless
