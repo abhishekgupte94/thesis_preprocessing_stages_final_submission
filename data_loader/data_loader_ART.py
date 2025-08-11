@@ -7,7 +7,9 @@ from torch.utils.data import Dataset
 # from thesis_main_files.main_files.feature_extraction.art_avdf.art.feature_extractor_ART_Video import SWIN_EXECUTOR as VideoFeatureExtractor
 # from thesis_main_files.main_files.processed.art_avdf.art.audio_preprocessorart import AudioPreprocessor
 # from thesis_main_files.main_files.processed.art_avdf.art.video_preprocessorart_Fanet_gpu import VideoPreprocessor_FANET
-from preprocessing.video.video_preprocessor_reframed_GPUs import parallel_main
+# from preprocessing.video.video_preprocessor_reframed_GPUs import parallel_main
+from preprocessing.video.video_preprocesor_reframed_GPU_nvMe import parallel_main
+
 
 
 from pathlib import Path
