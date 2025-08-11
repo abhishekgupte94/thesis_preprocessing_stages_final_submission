@@ -64,7 +64,7 @@ def convert_paths():
 
     # Swin Transformer project-specific paths
     project_dir= get_project_root()
-    video_postprocess_dir = project_dir / "files" / "processed" / "lip_videos"
+    video_postprocess_dir = project_dir / "files" / "processed" / "lip_videos" /"sample_real_70_percent_half1"
 
     return csv_path, video_dir, video_postprocess_dir
 def create_file_paths(project_dir_curr, csv_name=None):
