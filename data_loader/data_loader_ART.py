@@ -60,7 +60,7 @@ def convert_paths(csv_file):
         Tuple containing all path strings used for video processed and feature extraction.
     """
     # project_dir_curr = Path("/content/project_combined_repo_clean/thesis_main_files")
-    project_dir_curr = get_project_root()
+    project_dir_curr = get_project_root("thesis_preprocessing_stages_final_submission") #subject to change
 
     # Construct paths used in processing
     csv_path = str(project_dir_curr / "datasets" / "files" / "csv_files" / "processed" / "video" / csv_file)
@@ -68,7 +68,7 @@ def convert_paths(csv_file):
 
     # Swin Transformer project-specific paths
     project_dir= get_project_root()
-    video_postprocess_dir = project_dir / "files" / "processed" / "lip_videos" /"sample_real_70_percent_half1"
+    video_postprocess_dir = project_dir / "files" / "processed" / "lip_videos" /"sample_real_70_percent_half1" #subject to change
 
     return csv_path, video_dir, video_postprocess_dir
 def create_file_paths(project_dir_curr, csv_name=None):
