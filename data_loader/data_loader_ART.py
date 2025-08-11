@@ -125,7 +125,7 @@ def preprocess_videos_before_training(csv_name,output_dir, batch_size=32):
         batch_size (int): Number of frames per batch for lip extraction.
     """
     import pandas as pd
-    project_dir_curr = get_project_root()
+    project_dir_curr = get_project_root("thesis_preprocessing_stages_final_submission")
     # csv_name = Path(csv_path).name
     _ ,original_paths,_ = create_file_paths(project_dir_curr,csv_name = csv_name)
     # Step 1: Read CSV
