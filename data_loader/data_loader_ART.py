@@ -28,9 +28,12 @@ def get_project_root(project_name):
 
     # Look for the known parent folder
     for parent in current.parents:
-        if parent.name == "project_combined_repo_clean_preprocessing" or parent.name == "thesis_preprocessing_stages_final_submission" :
+        if parent.name == "project_combined_repo_clean_preprocessing":
             base_dir = parent.parent
             break
+        elif parent.name == "thesis_preprocessing_stages_final_submission":
+            return Path(parent.parent)
+
     else:
         return None
 
