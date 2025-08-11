@@ -32,11 +32,11 @@ def main():
 
     # 2. Auto-append .csv to the csv name
     csv_file = f"{args.csv_name}.csv"
-
+    csv_name = args.csv_name
     project_root_dir = get_project_root("thesis_preprocessing_stages_final_submission")
-    csv_path,_,video_postprocess_dir = convert_paths(csv_file = csv_file)
+    csv_path,_,video_postprocess_dir = convert_paths(csv_file = csv_file,csv_name = csv_name)
     if csv_file:
-        _,video_paths,_ = create_file_paths(project_root_dir,csv_name = csv_file)
+        _,video_paths,_ = create_file_paths(project_root_dir,csv_file = csv_file,csv_name = csv_name)
         print(video_paths[1:10])
         preprocess_videos_before_training(csv_name = csv_file,output_dir=video_postprocess_dir)
     else:

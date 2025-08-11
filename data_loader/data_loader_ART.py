@@ -54,7 +54,7 @@ def get_project_root(project_name):
     #         if parent.name in project_names:
     #             return parent
     return None
-def convert_paths(csv_file):
+def convert_paths(csv_file,csv_name):
     """
     Prepare all necessary paths for processing and feature extraction.
 
@@ -70,10 +70,10 @@ def convert_paths(csv_file):
 
     # Swin Transformer project-specific paths
     project_dir= get_project_root("thesis_preprocessing_stages_final_submission")
-    video_postprocess_dir = project_dir / "files" / "processed" / "lip_videos" /"sample_real_70_percent_half1" #subject to change
+    video_postprocess_dir = project_dir / "files" / "processed" / "lip_videos" / csv_name
 
     return csv_path, video_dir, video_postprocess_dir
-def create_file_paths(project_dir_curr, csv_name=None):
+def create_file_paths(project_dir_curr, csv_file=None,csv_name=None):
     """
     Generates full paths for video files based on filenames from a CSV file,
     appending '_lips_only' to each filename before the extension.
@@ -89,13 +89,13 @@ def create_file_paths(project_dir_curr, csv_name=None):
 
     # CSV and video directory paths
     # / Users / abhishekgupte_macbookpro / PycharmProjects / project_combined_repo_clean_preprocessing / files / processed / lip_videos
-    csv_path = project_dir_curr / "files" /"csv_files" / "processed" / "video"/ csv_name
+    csv_path = project_dir_curr / "files" /"csv_files" / "processed" / "video"/ csv_file
     csv_dir =  project_dir_curr / "files" /"csv_files" / "processed" / "video"
-    save_dir = project_dir_curr / "files" / "processed" / "lip_videos"
+    save_dir = project_dir_curr / "files" / "processed" / "lip_videos" / csv_name
 
     df = pd.read_csv(csv_path)
     # project_dir_curr = Path("Video-Swin-Transformer")
-    original_file_dir = project_dir_curr / "datasets" / "ssl_train"
+    original_file_dir = project_dir_curr / "datasets" / "ssl_train" / csv_name
 
     # Read CSV and extract file paths
 
