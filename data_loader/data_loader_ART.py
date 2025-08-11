@@ -48,7 +48,7 @@ def get_project_root(project_name="project_combined_repo_clean_preprocessing"):
             if parent.name in project_names:
                 return parent
     return None
-def convert_paths():
+def convert_paths(csv_file):
     """
     Prepare all necessary paths for processing and feature extraction.
 
@@ -59,7 +59,7 @@ def convert_paths():
     project_dir_curr = get_project_root()
 
     # Construct paths used in processing
-    csv_path = str(project_dir_curr / "datasets" / "files" / "csv_files" / "processed" / "video" /  "possible_training_sample.csv")
+    csv_path = str(project_dir_curr / "datasets" / "files" / "csv_files" / "processed" / "video" / csv_file)
     video_dir = str(project_dir_curr / "datasets" / "ssl_train")
 
     # Swin Transformer project-specific paths
