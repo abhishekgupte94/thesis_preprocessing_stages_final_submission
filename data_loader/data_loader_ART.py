@@ -61,8 +61,8 @@ def convert_paths(csv_file,csv_name):
     Returns:
         Tuple containing all path strings used for video processed and feature extraction.
     """
-    # project_dir_curr = get_project_root("thesis_preprocessing_stages_final_submission")
-    project_dir_curr = get_project_root("project_combined_repo_clean_preprocessing")
+    project_dir_curr = get_project_root("thesis_preprocessing_stages_final_submission")
+    # project_dir_curr = get_project_root("project_combined_repo_clean_preprocessing")
 
     # Construct paths used in processing
     csv_path = str(project_dir_curr / "datasets" / "files" / "csv_files" / "processed" / "video" / csv_file)
@@ -99,8 +99,8 @@ def create_file_paths(project_dir_curr, csv_file=None, csv_name=None,
     import pandas as pd
     from pathlib import Path
 
-    # project_dir_curr = get_project_root("thesis_preprocessing_stages_final_submission")
-    project_dir_curr = get_project_root("project_combined_repo_clean_preprocessing")
+    project_dir_curr = get_project_root("thesis_preprocessing_stages_final_submission")
+    # project_dir_curr = get_project_root("project_combined_repo_clean_preprocessing")
 
     # CSV and video directory paths
     csv_path = project_dir_curr / "files" / "csv_files" / "processed" / "video" / csv_file
@@ -194,7 +194,9 @@ def preprocess_videos_before_training(csv_name,output_dir, batch_size=32):
         output_dir (str): Directory where lip-only videos will be saved.
         batch_size (int): Number of frames per batch for lip extraction.
     """
-    import pandas as pd
+    # import pandas as pd
+    # project_dir_curr = get_project_root("project_combined_repo_clean_preprocessing")
+
     project_dir_curr = get_project_root("thesis_preprocessing_stages_final_submission")
     # csv_name = Path(csv_path).name
     _ ,original_paths,_ = create_file_paths(project_dir_curr,csv_name = csv_name)
