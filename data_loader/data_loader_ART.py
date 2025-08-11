@@ -32,7 +32,9 @@ def get_project_root(project_name):
             base_dir = parent.parent
             break
         elif parent.name == "thesis_preprocessing_stages_final_submission":
-            return Path(parent.parent)
+            # return Path(parent.parent)
+            base_dir = parent.parent
+            break
 
     else:
         return None
