@@ -13,7 +13,7 @@ from preprocessing.video.video_preprocessor_reframed_GPUs import parallel_main
 from pathlib import Path
 import pandas as pd
 
-def get_project_root(project_name="project_combined_repo_clean_preprocessing"):
+def get_project_root(project_name):
     """
     Locate the root directory of the project based on script path.
 
@@ -28,25 +28,26 @@ def get_project_root(project_name="project_combined_repo_clean_preprocessing"):
 
     # Look for the known parent folder
     for parent in current.parents:
-        if parent.name == "project_combined_repo_clean_preprocessing":
+        if parent.name == "project_combined_repo_clean_preprocessing" or parent.name == "thesis_preprocessing_stages_final_submission" :
             base_dir = parent.parent
             break
     else:
         return None
 
-    if project_name:
+    # if project_name:
         # Return the matching subdirectory if it exists
+    if base_dir and project_name:
         target_path = base_dir / project_name
         if target_path.exists() and target_path.is_dir():
             return target_path
         else:
             return None
-    else:
-        # Fallback search for common project directories
-        project_names = {"thesis_main_files", "Video-Swin-Transformer", "melodyExtraction_JDC"}
-        for parent in current.parents:
-            if parent.name in project_names:
-                return parent
+    # else:
+    #     # Fallback search for common project directories
+    #     project_names = {"thesis_main_files", "Video-Swin-Transformer", "melodyExtraction_JDC"}
+    #     for parent in current.parents:
+    #         if parent.name in project_names:
+    #             return parent
     return None
 def convert_paths(csv_file):
     """
