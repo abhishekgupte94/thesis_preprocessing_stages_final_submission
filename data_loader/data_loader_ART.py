@@ -61,47 +61,63 @@ def convert_paths(csv_file,csv_name):
     Returns:
         Tuple containing all path strings used for video processed and feature extraction.
     """
-    # project_dir_curr = Path("/content/project_combined_repo_clean/thesis_main_files")
-    project_dir_curr = get_project_root("thesis_preprocessing_stages_final_submission") #subject to change
+    # project_dir_curr = get_project_root("thesis_preprocessing_stages_final_submission")
+    project_dir_curr = get_project_root("project_combined_repo_clean_preprocessing")
 
     # Construct paths used in processing
     csv_path = str(project_dir_curr / "datasets" / "files" / "csv_files" / "processed" / "video" / csv_file)
     video_dir = str(project_dir_curr / "datasets" / "ssl_train")
-
-    # Swin Transformer project-specific paths
-    project_dir= get_project_root("thesis_preprocessing_stages_final_submission")
-    video_postprocess_dir = project_dir / "files" / "processed" / "lip_videos" / csv_name
+        # Swin Transformer project-specific paths
+    # project_dir= get_project_root("thesis_preprocessing_stages_final_submission")
+    video_postprocess_dir = project_dir_curr / "files" / "processed" / "lip_videos" / csv_name
 
     return csv_path, video_dir, video_postprocess_dir
-def create_file_paths(project_dir_curr, csv_file=None,csv_name=None):
+
+
+def create_file_paths(project_dir_curr, csv_file=None, csv_name=None,
+                      check_original_files=True, check_lips_files=False,
+                      abort_on_missing=True, verbose=False):
     """
     Generates full paths for video files based on filenames from a CSV file,
     appending '_lips_only' to each filename before the extension.
 
     Args:
         project_dir_curr (Path or str): Base project directory.
+        csv_file (str): CSV file name with file listings and labels.
         csv_name (str): Name of CSV file with file listings and labels.
+        check_original_files (bool): Whether to check if original files exist. Default True.
+        check_lips_files (bool): Whether to check if lips-only files exist. Default False.
+        abort_on_missing (bool): Whether to abort if files are missing. Default True.
+        verbose (bool): Whether to print detailed file check results. Default False.
 
     Returns:
         tuple: lips_only_paths, original_paths, labels
+
+    Raises:
+        FileNotFoundError: If files are missing and abort_on_missing=True
     """
-    # project_dir_curr = get_project_root()
+    import pandas as pd
+    from pathlib import Path
+
+    # project_dir_curr = get_project_root("thesis_preprocessing_stages_final_submission")
+    project_dir_curr = get_project_root("project_combined_repo_clean_preprocessing")
 
     # CSV and video directory paths
-    # / Users / abhishekgupte_macbookpro / PycharmProjects / project_combined_repo_clean_preprocessing / files / processed / lip_videos
-    csv_path = project_dir_curr / "files" /"csv_files" / "processed" / "video"/ csv_file
-    csv_dir =  project_dir_curr / "files" /"csv_files" / "processed" / "video"
+    csv_path = project_dir_curr / "files" / "csv_files" / "processed" / "video" / csv_file
+    csv_dir = project_dir_curr / "files" / "csv_files" / "processed" / "video"
     save_dir = project_dir_curr / "files" / "processed" / "lip_videos" / csv_name
-
-    df = pd.read_csv(csv_path)
-    # project_dir_curr = Path("Video-Swin-Transformer")
     original_file_dir = project_dir_curr / "datasets" / "ssl_train" / csv_name
 
-    # Read CSV and extract file paths
+    # Check if CSV file exists
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
 
+    df = pd.read_csv(csv_path)
 
     lips_only_paths = []
     original_paths = []
+    missing_files = []
+
     for filename in df['file']:
         original_path = Path(filename)
         new_filename = original_path.stem + "_lips_only" + original_path.suffix
@@ -111,9 +127,63 @@ def create_file_paths(project_dir_curr, csv_file=None,csv_name=None):
         lips_only_paths.append(str(full_lips_only_path))
         original_paths.append(str(full_original_path))
 
+        # File existence checks - abort immediately if missing and abort_on_missing=True
+        if check_original_files and not full_original_path.exists():
+            missing_files.append(f"ORIGINAL: {full_original_path}")
+            if abort_on_missing:
+                raise FileNotFoundError(f"Required original file not found: {full_original_path}")
+
+        if check_lips_files and not full_lips_only_path.exists():
+            missing_files.append(f"LIPS_ONLY: {full_lips_only_path}")
+            if abort_on_missing:
+                raise FileNotFoundError(f"Required lips-only file not found: {full_lips_only_path}")
+
     labels = df['label'].tolist()
 
+    # If we made it here and there were missing files but abort_on_missing=False
+    if missing_files and not abort_on_missing and verbose:
+        print(f"\n=== WARNING: Missing Files Found ===")
+        print(f"Total missing files: {len(missing_files)}")
+        print("First few missing files:")
+        for missing_file in missing_files[:5]:
+            print(f"  - {missing_file}")
+
+    if verbose and not missing_files:
+        print(f"\n=== All Files Found ===")
+        print(f"✓ Verified {len(df)} files successfully")
+
     return lips_only_paths, original_paths, labels
+
+
+def quick_file_check(file_paths):
+    """
+    Ultra-lightweight helper function to quickly check if files exist.
+
+    Args:
+        file_paths (list): List of file paths to check
+
+    Returns:
+        dict: Summary of existing vs missing files
+    """
+    from pathlib import Path
+
+    existing = []
+    missing = []
+
+    for path in file_paths:
+        if Path(path).exists():
+            existing.append(path)
+        else:
+            missing.append(path)
+
+    return {
+        'existing': existing,
+        'missing': missing,
+        'total': len(file_paths),
+        'found_count': len(existing),
+        'missing_count': len(missing)
+    }
+
 def preprocess_videos_before_training(csv_name,output_dir, batch_size=32):
     """
     Reads video paths from a CSV file and preprocesses them into a common output directory.
