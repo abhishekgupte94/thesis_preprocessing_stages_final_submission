@@ -67,7 +67,7 @@ def convert_paths(csv_file):
     video_dir = str(project_dir_curr / "datasets" / "ssl_train")
 
     # Swin Transformer project-specific paths
-    project_dir= get_project_root()
+    project_dir= get_project_root("thesis_preprocessing_stages_final_submission")
     video_postprocess_dir = project_dir / "files" / "processed" / "lip_videos" /"sample_real_70_percent_half1" #subject to change
 
     return csv_path, video_dir, video_postprocess_dir
