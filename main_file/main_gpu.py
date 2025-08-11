@@ -39,7 +39,7 @@ def main():
     if csv_file:
         _,video_paths,_ = create_file_paths(project_root_dir,csv_file = csv_file,csv_name = csv_name)
         # print(video_paths[1:10])
-        # preprocess_videos_before_training(csv_name = csv_file,output_dir=video_postprocess_dir)
+        preprocess_videos_before_training(csv_name = csv_file,output_dir=video_postprocess_dir)
     else:
         print("The csv name does not exist!")
 
