@@ -424,7 +424,8 @@ class VideoPreprocessor_FANET:
                     temp_path = os.path.join(self.temp_dir, f"temp_{uuid.uuid4()}.avi")
                 # ============ NEW NVMe WRITE OPTIMIZATION END ============
 
-                fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+                # Use H264 for better compatibility and performance
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or try 'XVID'
                 out = cv2.VideoWriter(temp_path, fourcc, 25.0, (w, h))
 
                 if not out.isOpened():
