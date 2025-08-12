@@ -14,25 +14,16 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import tempfile
 import shutil
-
-# ============ NEW NVMe ADDITIONS START ============
-import json  # NEW: For saving/loading storage configuration
-import psutil  # NEW: For disk usage monitoring and partition detection
-
-# ============ NEW NVMe ADDITIONS END ============
+import json
+import psutil
 
 mp.set_start_method('spawn', force=True)
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 
-# ============ NEW NVMe FUNCTION START ============
 def load_storage_config():
     """
-    NEW FUNCTION: Load storage configuration from pre-flight checks
-
-    Technology: JSON configuration persistence
-    - Saves results of storage benchmark to avoid re-running
-    - Contains NVMe detection results and performance metrics
+    Load storage configuration from pre-flight checks
     """
     if os.path.exists('storage_config.json'):
         with open('storage_config.json', 'r') as f:
@@ -46,14 +37,10 @@ def load_storage_config():
         }
 
 
-# ============ NEW NVMe FUNCTION END ============
-
 class VideoPreprocessor_FANET:
-    _fa_lock = mp.Lock()
-
     def __init__(self, batch_size: int, output_base_dir: str = None,
                  device: str = 'cuda', rank: int = 0, stream=None,
-                 use_nvme_cache: bool = True):  # NEW PARAMETER: Enable/disable NVMe caching
+                 use_nvme_cache: bool = True):
 
         self.batch_size = batch_size
         self.output_base_dir = output_base_dir
@@ -61,63 +48,47 @@ class VideoPreprocessor_FANET:
         self.rank = rank
         self.stream = stream or torch.cuda.current_stream()
 
-        # ============ NEW NVMe ATTRIBUTES START ============
-        # NEW: NVMe cache management attributes
-        self.use_nvme_cache = use_nvme_cache  # NEW: Flag to enable/disable caching
-        self.cache_dir = None  # NEW: Path to NVMe cache directory
-        self.cached_videos = {}  # NEW: Mapping of original path -> cached path
+        # NVMe cache management attributes
+        self.use_nvme_cache = use_nvme_cache
+        self.cache_dir = None
+        self.cached_videos = {}
 
-        # NEW: Initialize NVMe cache if enabled
+        # Initialize NVMe cache if enabled
         if self.use_nvme_cache:
-            self._setup_nvme_cache()  # NEW: Setup method for NVMe
-        # ============ NEW NVMe ATTRIBUTES END ============
+            self._setup_nvme_cache()
 
         os.makedirs(self.output_base_dir, exist_ok=True)
 
-        self.fa = None
-        self._init_face_alignment()
+        # Initialize thread-local storage for face alignment
+        self._thread_local = threading.local()
+        self.fa = None  # Remove the global face alignment instance
+        self._init_face_alignment_main_thread()  # Initialize for main thread
 
+        # CUDA optimizations
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
 
-        # MODIFIED: Increased thread workers when using NVMe (was 4, now 8)
+        # Increased thread workers for better parallelism
         self.frame_executor = ThreadPoolExecutor(
-            max_workers=8 if use_nvme_cache else 4,  # NEW: More workers for fast NVMe I/O
+            max_workers=16 if use_nvme_cache else 8,
             thread_name_prefix=f"gpu{rank}_frame_reader"
         )
         self.save_executor = ThreadPoolExecutor(
-            max_workers=4,
+            max_workers=8,
             thread_name_prefix=f"gpu{rank}_video_writer"
         )
 
         self.writer_locks = {}
         self.temp_dir = tempfile.mkdtemp(prefix=f"gpu{rank}_")
 
-    # ============ NEW NVMe METHOD START ============
     def _setup_nvme_cache(self):
         """
-        NEW METHOD: Automatically detect and setup NVMe cache
-
-        Technologies used:
-        1. psutil: Cross-platform system monitoring
-           - Detects disk partitions and their types
-           - Monitors available space in real-time
-
-        2. Filesystem hierarchy detection:
-           - Lambda Labs typically mounts NVMe at /scratch or /tmp
-           - Checks multiple standard locations in priority order
-
-        3. Performance-based selection:
-           - Uses benchmark results to choose fastest storage
-           - Falls back gracefully if NVMe not available
+        Automatically detect and setup NVMe cache with proper locking
         """
-
-        # Load pre-computed storage benchmarks
         config = load_storage_config()
 
         # Priority order for Lambda Labs infrastructure
-        # These paths are where NVMe SSDs are typically mounted
         cache_priorities = [
             '/scratch',  # Primary NVMe mount on Lambda
             '/tmp',  # Often NVMe or tmpfs (RAM disk)
@@ -142,49 +113,31 @@ class VideoPreprocessor_FANET:
                         best_speed = speed
 
         if best_cache:
-            # Create GPU-specific cache directory to avoid conflicts
-            self.cache_dir = Path(best_cache) / f"lip_extraction_cache_gpu{self.rank}"
-            self.cache_dir.mkdir(exist_ok=True, parents=True)
+            # Create cache directory with proper locking to avoid concurrent access issues
+            cache_lock_file = Path(best_cache) / ".cache_setup.lock"
+            cache_lock_file.parent.mkdir(exist_ok=True, parents=True)
 
-            print(f"[GPU {self.rank}] ✅ NVMe cache enabled at {self.cache_dir}")
-            print(f"[GPU {self.rank}]    Speed: {best_speed:.0f} MB/s")
+            with open(cache_lock_file, 'w') as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                try:
+                    # Create GPU-specific cache directory to avoid conflicts
+                    self.cache_dir = Path(best_cache) / f"lip_extraction_cache_gpu{self.rank}"
+                    self.cache_dir.mkdir(exist_ok=True, parents=True)
+
+                    print(f"[GPU {self.rank}] ✅ NVMe cache enabled at {self.cache_dir}")
+                    print(f"[GPU {self.rank}]    Speed: {best_speed:.0f} MB/s")
+                finally:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         else:
             print(f"[GPU {self.rank}] ⚠️ No suitable NVMe storage found, using direct I/O")
             self.use_nvme_cache = False
 
-    # ============ NEW NVMe METHOD END ============
-
-    # ============ NEW NVMe METHOD START ============
     def _cache_videos_batch(self, video_paths: list) -> dict:
         """
-        NEW METHOD: Pre-cache all videos to NVMe storage for fast access
-
-        Technologies and concepts:
-
-        1. **Staging Pattern**:
-           - Copy data from slow storage (HDD/Network) to fast storage (NVMe)
-           - Process from fast storage, eliminating I/O bottlenecks
-
-        2. **Parallel I/O with ThreadPoolExecutor**:
-           - Uses 16 concurrent threads for copying
-           - Maximizes throughput for bulk transfers
-           - Each thread handles one file independently
-
-        3. **shutil.copy2**:
-           - Preserves metadata (timestamps, permissions)
-           - Uses optimized OS-level copy operations
-           - Automatically uses sendfile() on Linux for zero-copy transfers
-
-        4. **Progress tracking**:
-           - Reports copy speed and completion status
-           - Helps identify I/O bottlenecks
-
-        Returns:
-            Dictionary mapping original paths to cached paths
+        Pre-cache all videos to NVMe storage for fast access
         """
-
         if not self.use_nvme_cache:
-            return {p: p for p in video_paths}  # Return original paths if no cache
+            return {p: p for p in video_paths}
 
         print(f"[GPU {self.rank}] Caching {len(video_paths)} videos to NVMe...")
         start_time = time.time()
@@ -199,7 +152,6 @@ class VideoPreprocessor_FANET:
 
                 # Skip if already cached (useful for retries)
                 if not cached_path.exists():
-                    # shutil.copy2 preserves metadata and uses efficient OS operations
                     shutil.copy2(video_path, cached_path)
 
                 return video_path, str(cached_path)
@@ -232,46 +184,48 @@ class VideoPreprocessor_FANET:
 
         return cached_paths
 
-    # ============ NEW NVMe METHOD END ============
+    def _init_face_alignment_main_thread(self):
+        """Initialize face alignment for main thread only"""
+        torch.cuda.set_device(self.device)
+        # This will be accessed through _get_face_alignment() for thread safety
+        print(f"[GPU {self.rank}] Initialized face alignment system")
 
-    def _init_face_alignment(self):
-        """Same as before - no NVMe changes"""
-        if self.fa is None:
-            with self._fa_lock:
-                if self.fa is None:
-                    torch.cuda.set_device(self.device)
-                    self.fa = face_alignment.FaceAlignment(
-                        face_alignment.LandmarksType.TWO_D,
-                        device=self.device,
-                        face_detector='sfd',
-                        flip_input=False
-                    )
-                    print(f"[GPU {self.rank}] Initialized face alignment")
+    def _get_face_alignment(self):
+        """Get thread-specific face alignment instance for CUDA thread safety"""
+        if not hasattr(self._thread_local, 'fa'):
+            # Ensure we're in the right CUDA context
+            with torch.cuda.device(self.device):
+                torch.cuda.set_device(self.device)
+                self._thread_local.fa = face_alignment.FaceAlignment(
+                    face_alignment.LandmarksType.TWO_D,
+                    device=self.device,
+                    face_detector='sfd',
+                    flip_input=False
+                )
+                print(
+                    f"[GPU {self.rank}] Created thread-local face alignment for thread {threading.current_thread().name}")
+        return self._thread_local.fa
 
     def __call__(self, video_paths: list[str]) -> None:
-        # ============ NEW NVMe CACHING LOGIC START ============
-        # NEW: Pre-cache all assigned videos to NVMe before processing
+        # Pre-cache all assigned videos to NVMe before processing
         if self.use_nvme_cache:
-            # This copies all videos to fast storage first
             self.cached_videos = self._cache_videos_batch(video_paths)
-            # Use cached paths for processing instead of original paths
             processing_paths = list(self.cached_videos.values())
         else:
-            # No caching - use original paths directly
             processing_paths = video_paths
-        # ============ NEW NVMe CACHING LOGIC END ============
 
-        batch_size = 2
+        # Increased batch size for better GPU utilization
+        batch_size = 8
 
         for i in range(0, len(processing_paths), batch_size):
             batch_paths = processing_paths[i:i + batch_size]
             futures = []
 
             for path in batch_paths:
-                # NEW: Track original path for output naming
+                # Track original path for output naming
                 orig_path = video_paths[i + batch_paths.index(path)]
                 future = self.frame_executor.submit(
-                    self.process_video, path, orig_path  # NEW: Pass both paths
+                    self.process_video, path, orig_path
                 )
                 futures.append(future)
 
@@ -281,20 +235,19 @@ class VideoPreprocessor_FANET:
                 except Exception as e:
                     print(f"❌ [GPU {self.rank}] Video processing failed: {e}")
 
+        # Ensure all processing is complete before cleanup
         self.save_executor.shutdown(wait=True)
         self.frame_executor.shutdown(wait=True)
 
-        # ============ NEW NVMe CLEANUP START ============
-        # NEW: Clean up NVMe cache after processing
+        # Clean up NVMe cache after all processing is done
         if self.use_nvme_cache and self.cache_dir:
             try:
                 print(f"[GPU {self.rank}] Cleaning up cache directory...")
-                # Remove entire cache directory and all contents
                 shutil.rmtree(self.cache_dir)
             except Exception as e:
                 print(f"⚠️ Failed to clean cache: {e}")
-        # ============ NEW NVMe CLEANUP END ============
 
+        # Clean up temp directory
         try:
             shutil.rmtree(self.temp_dir)
         except:
@@ -302,16 +255,13 @@ class VideoPreprocessor_FANET:
 
     def process_video(self, video_path: str, original_path: str = None) -> None:
         """
-        MODIFIED: Added original_path parameter to handle cached vs original paths
-        - video_path: Path to cached video on NVMe
-        - original_path: Original path for naming output files
+        Process a single video with improved error handling
         """
-
         if not os.path.exists(video_path):
             print(f"❌ Video path does not exist: {video_path}")
             return
 
-        # NEW: Use original path for output naming if provided
+        # Use original path for output naming if provided
         if original_path:
             video_name = Path(original_path).stem
         else:
@@ -320,15 +270,16 @@ class VideoPreprocessor_FANET:
         unique_id = str(uuid.uuid4())[:8]
         out_path = os.path.join(self.output_base_dir, f"{video_name}_{unique_id}_lips.avi")
 
-        # NEW: Log whether using cache or direct I/O
+        # Log whether using cache or direct I/O
         if self.use_nvme_cache and video_path != original_path:
             print(f"[INFO] [GPU {self.rank}] Processing from cache: {video_path}")
         else:
             print(f"[INFO] [GPU {self.rank}] Processing: {video_path}")
 
         try:
-            frame_queue = Queue(maxsize=100)
-            crop_queue = Queue(maxsize=100)
+            # Increased queue sizes for better buffering
+            frame_queue = Queue(maxsize=500)
+            crop_queue = Queue(maxsize=500)
 
             reader_future = self.frame_executor.submit(
                 self._async_frame_reader, video_path, frame_queue
@@ -349,23 +300,22 @@ class VideoPreprocessor_FANET:
 
         except Exception as e:
             print(f"❌ [GPU {self.rank}] Error processing {video_path}: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             gc.collect()
 
     def _async_frame_reader(self, video_path: str, frame_queue: Queue):
-        """MODIFIED: Optimized for NVMe read speeds"""
+        """Optimized frame reader for NVMe speeds"""
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             print(f"❌ Error opening video: {video_path}")
             frame_queue.put(None)
             return
 
-        # ============ NEW NVMe OPTIMIZATION START ============
-        # NEW: Increase buffer size for NVMe to reduce syscalls
+        # Increase buffer size for NVMe to reduce syscalls
         if self.use_nvme_cache:
-            # Larger buffer reduces kernel overhead for fast storage
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 10)
-            # ============ NEW NVMe OPTIMIZATION END ============
 
         try:
             batch = []
@@ -394,7 +344,7 @@ class VideoPreprocessor_FANET:
             cap.release()
 
     def _async_video_writer_safe(self, out_path: str, crop_queue: Queue):
-        """MODIFIED: Write to NVMe first for faster I/O"""
+        """Improved video writer with better codec and error handling"""
         frames_buffer = []
         frame_count = 0
 
@@ -414,22 +364,29 @@ class VideoPreprocessor_FANET:
             if frames_buffer:
                 h, w = frames_buffer[0].shape[:2]
 
-                # ============ NEW NVMe WRITE OPTIMIZATION START ============
-                # NEW: Write to NVMe cache first for faster writes
+                # Write to NVMe cache first for faster writes
                 if self.use_nvme_cache and self.cache_dir:
-                    # Writing to NVMe is much faster than network/HDD
                     temp_path = str(self.cache_dir / f"temp_{uuid.uuid4()}.avi")
                 else:
-                    # Fallback to regular temp directory
                     temp_path = os.path.join(self.temp_dir, f"temp_{uuid.uuid4()}.avi")
-                # ============ NEW NVMe WRITE OPTIMIZATION END ============
 
-                # Use H264 for better compatibility and performance
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or try 'XVID'
-                out = cv2.VideoWriter(temp_path, fourcc, 25.0, (w, h))
+                # Use better codec for compatibility and performance
+                # Try multiple codecs in order of preference
+                codecs = [
+                    cv2.VideoWriter_fourcc(*'mp4v'),
+                    cv2.VideoWriter_fourcc(*'XVID'),
+                    cv2.VideoWriter_fourcc(*'MJPG')  # Fallback
+                ]
 
-                if not out.isOpened():
-                    print(f"❌ [GPU {self.rank}] Failed to open video writer")
+                out = None
+                for fourcc in codecs:
+                    out = cv2.VideoWriter(temp_path, fourcc, 25.0, (w, h))
+                    if out.isOpened():
+                        break
+                    out.release()
+
+                if not out or not out.isOpened():
+                    print(f"❌ [GPU {self.rank}] Failed to open video writer with any codec")
                     return
 
                 written = 0
@@ -443,20 +400,32 @@ class VideoPreprocessor_FANET:
 
                 out.release()
 
-                if written > 0 and os.path.getsize(temp_path) > 1000:
-                    # Move from temp to final location (might be slower storage)
-                    shutil.move(temp_path, out_path)
-                    print(f"[GPU {self.rank}] ✅ Saved {written}/{frame_count} frames")
+                # Enhanced error diagnostics
+                if written > 0:
+                    file_size = os.path.getsize(temp_path)
+                    print(f"[GPU {self.rank}] Debug: Written {written} frames, file size: {file_size} bytes")
+
+                    if file_size > 1000:  # Minimum reasonable file size
+                        shutil.move(temp_path, out_path)
+                        print(f"[GPU {self.rank}] ✅ Saved {written}/{frame_count} frames")
+                    else:
+                        print(f"❌ [GPU {self.rank}] Invalid video file - size too small: {file_size} bytes")
+                        print(f"    Frame dimensions: {w}x{h}")
+                        print(f"    Frames in buffer: {len(frames_buffer)}")
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
                 else:
-                    print(f"❌ [GPU {self.rank}] Invalid video file")
+                    print(f"❌ [GPU {self.rank}] No frames written successfully")
                     if os.path.exists(temp_path):
                         os.remove(temp_path)
 
         except Exception as e:
             print(f"❌ [GPU {self.rank}] Video writing error: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _process_frame_stream_safe(self, frame_queue: Queue, crop_queue: Queue):
-        """Same as before - no NVMe changes"""
+        """Process frame batches with improved parallelism"""
         while True:
             batch = frame_queue.get()
             if batch is None:
@@ -476,7 +445,7 @@ class VideoPreprocessor_FANET:
                 frame_queue.task_done()
 
     def _process_batch_cuda_safe(self, frame_batch):
-        """Same as before - no NVMe changes needed here"""
+        """Process batch with no lock contention"""
         if not frame_batch:
             return []
 
@@ -484,7 +453,7 @@ class VideoPreprocessor_FANET:
 
         try:
             mem_free = torch.cuda.mem_get_info(self.device)[0] / 1024 ** 3
-            sub_batch_size = min(4 if mem_free < 40 else 8, len(frame_batch))
+            sub_batch_size = min(16 if mem_free < 40 else 32, len(frame_batch))
 
             for i in range(0, len(frame_batch), sub_batch_size):
                 sub_batch = frame_batch[i:i + sub_batch_size]
@@ -509,8 +478,9 @@ class VideoPreprocessor_FANET:
 
                 torch.cuda.synchronize(self.device)
 
-                with self._fa_lock:
-                    landmarks_batch = self.fa.get_landmarks_from_batch(frame_batch_tensor)
+                # Get thread-safe face alignment instance
+                fa = self._get_face_alignment()
+                landmarks_batch = fa.get_landmarks_from_batch(frame_batch_tensor)
 
                 for j, (frame_tensor, landmarks) in enumerate(zip(frame_batch_tensor, landmarks_batch)):
                     try:
@@ -540,13 +510,15 @@ class VideoPreprocessor_FANET:
 
         except Exception as e:
             print(f"❌ Batch processing failed: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             gc.collect()
 
         return crops
 
     def extract_lip_segment(self, frame, landmarks):
-        """Same as before - no NVMe changes"""
+        """Extract lip region from frame using landmarks"""
         if landmarks is None:
             return None, (0, 0, 0, 0)
 
@@ -564,8 +536,8 @@ class VideoPreprocessor_FANET:
         return lip_crop, (x_min, y_min, x_max, y_max)
 
 
-def worker_process(rank, chunks, batch_size, output_dir, return_dict, use_nvme):  # NEW: Added use_nvme parameter
-    """MODIFIED: Added NVMe support parameter"""
+def worker_process(rank, chunks, batch_size, output_dir, return_dict, use_nvme):
+    """Worker process with improved error handling"""
     try:
         torch.cuda.set_device(rank)
         torch.cuda.init()
@@ -573,6 +545,7 @@ def worker_process(rank, chunks, batch_size, output_dir, return_dict, use_nvme):
         device_str = f'cuda:{rank}'
         stream = torch.cuda.Stream(device=rank)
 
+        # Lower process priority for better system responsiveness
         os.nice(10)
 
         with torch.cuda.device(rank):
@@ -583,7 +556,7 @@ def worker_process(rank, chunks, batch_size, output_dir, return_dict, use_nvme):
                     device=device_str,
                     rank=rank,
                     stream=stream,
-                    use_nvme_cache=use_nvme  # NEW: Pass NVMe flag
+                    use_nvme_cache=use_nvme
                 )
 
                 assigned_videos = chunks[rank]
@@ -609,14 +582,14 @@ def worker_process(rank, chunks, batch_size, output_dir, return_dict, use_nvme):
         return_dict[rank] = False
     finally:
         gc.collect()
+        torch.cuda.empty_cache()
 
 
 def parallel_main(video_paths: list[str], batch_size: int, output_dir: str,
-                  use_nvme: bool = True):  # NEW: Added use_nvme parameter
-    """MODIFIED: Added NVMe support"""
+                  use_nvme: bool = True):
+    """Main entry point with NVMe support"""
 
-    # ============ NEW NVMe PRE-FLIGHT CHECK START ============
-    # NEW: Check for NVMe availability before processing
+    # Check for NVMe availability before processing
     if use_nvme:
         print("🔍 Checking NVMe availability...")
         config = load_storage_config()
@@ -626,11 +599,11 @@ def parallel_main(video_paths: list[str], batch_size: int, output_dir: str,
         else:
             print("⚠️ No NVMe storage found, falling back to direct I/O")
             use_nvme = False
-    # ============ NEW NVMe PRE-FLIGHT CHECK END ============
 
     available_gpus = torch.cuda.device_count()
     world_size = min(available_gpus, 8)
 
+    # Environment optimizations
     os.environ['CUDA_LAUNCH_BLOCKING'] = '0'
     os.environ['TORCH_USE_CUDA_DSA'] = '1'
 
@@ -642,7 +615,6 @@ def parallel_main(video_paths: list[str], batch_size: int, output_dir: str,
     print(f"🚀 Starting distributed processing on {world_size} GPUs")
     print(f"📁 Videos per GPU: {[len(chunk) for chunk in chunks]}")
 
-    # NEW: Log NVMe status
     if use_nvme:
         print(f"💾 NVMe caching enabled")
 
@@ -652,7 +624,7 @@ def parallel_main(video_paths: list[str], batch_size: int, output_dir: str,
 
     mp.spawn(
         worker_process,
-        args=(chunks, batch_size, output_dir, return_dict, use_nvme),  # NEW: Pass NVMe flag
+        args=(chunks, batch_size, output_dir, return_dict, use_nvme),
         nprocs=world_size,
         join=True
     )
@@ -665,7 +637,7 @@ def parallel_main(video_paths: list[str], batch_size: int, output_dir: str,
 
 
 def get_video_info(video_path):
-    """Same as before - no NVMe changes"""
+    """Get video duration for load balancing"""
     try:
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -678,20 +650,37 @@ def get_video_info(video_path):
 
 
 def balanced_chunk_videos(video_paths, num_gpus):
-    """Same as before - no NVMe changes"""
+    """Balance video workload across GPUs by duration"""
     videos_with_info = []
     for path in video_paths:
         duration = get_video_info(path)
         videos_with_info.append((path, duration))
 
+    # Sort by duration for better load balancing
     videos_with_info.sort(key=lambda x: x[1], reverse=True)
 
     chunks = [[] for _ in range(num_gpus)]
     chunk_durations = [0] * num_gpus
 
+    # Assign videos to GPU with least total duration
     for video_path, duration in videos_with_info:
         min_idx = chunk_durations.index(min(chunk_durations))
         chunks[min_idx].append(video_path)
         chunk_durations[min_idx] += duration
 
     return chunks
+
+
+# Usage example:
+# if __name__ == "__main__":
+#     # Example usage
+#     video_list = ["path/to/video1.mp4", "path/to/video2.mp4"]  # Add your video paths
+#     output_directory = "./output_lips"
+#
+#     # Run with default settings (NVMe enabled if available)
+#     parallel_main(
+#         video_paths=video_list,
+#         batch_size=32,  # Increased from 16 for better GPU utilization
+#         output_dir=output_directory,
+#         use_nvme=True
+#     )
