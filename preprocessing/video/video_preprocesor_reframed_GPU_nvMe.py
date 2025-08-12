@@ -338,12 +338,23 @@ class VideoPreprocessor_FANET:
         """Improved video writer with better codec and error handling"""
         frames_buffer = []
         frame_count = 0
+        queue_timeouts = 0
 
         try:
             while True:
-                crops = crop_queue.get()
+                try:
+                    crops = crop_queue.get(timeout=10)  # Add timeout to detect stalls
+                except:
+                    queue_timeouts += 1
+                    if queue_timeouts > 3:
+                        print(f"[GPU {self.rank}] Warning: No crops received for 30 seconds, ending writer")
+                        break
+                    continue
+
                 if crops is None:
                     break
+
+                queue_timeouts = 0  # Reset timeout counter
 
                 for crop in crops:
                     if crop is not None:
@@ -352,8 +363,15 @@ class VideoPreprocessor_FANET:
 
                 crop_queue.task_done()
 
+            print(f"[GPU {self.rank}] Writer received {frame_count} frames to write")
+
+            if not frames_buffer:
+                print(f"❌ [GPU {self.rank}] No frames to write - frames_buffer is empty")
+                return
+
             if frames_buffer:
                 h, w = frames_buffer[0].shape[:2]
+                print(f"[GPU {self.rank}] Writing video with dimensions: {w}x{h}")
 
                 # Write to NVMe cache first for faster writes
                 if self.use_nvme_cache and self.cache_dir:
@@ -364,15 +382,18 @@ class VideoPreprocessor_FANET:
                 # Use better codec for compatibility and performance
                 # Try multiple codecs in order of preference
                 codecs = [
-                    cv2.VideoWriter_fourcc(*'mp4v'),
-                    cv2.VideoWriter_fourcc(*'XVID'),
-                    cv2.VideoWriter_fourcc(*'MJPG')  # Fallback
+                    ('mp4v', cv2.VideoWriter_fourcc(*'mp4v')),
+                    ('XVID', cv2.VideoWriter_fourcc(*'XVID')),
+                    ('MJPG', cv2.VideoWriter_fourcc(*'MJPG'))  # Fallback
                 ]
 
                 out = None
-                for fourcc in codecs:
+                selected_codec = None
+                for codec_name, fourcc in codecs:
                     out = cv2.VideoWriter(temp_path, fourcc, 25.0, (w, h))
                     if out.isOpened():
+                        selected_codec = codec_name
+                        print(f"[GPU {self.rank}] Using codec: {codec_name}")
                         break
                     out.release()
 
@@ -381,32 +402,41 @@ class VideoPreprocessor_FANET:
                     return
 
                 written = 0
-                for frame in frames_buffer:
+                write_failures = 0
+                for i, frame in enumerate(frames_buffer):
                     if frame.shape[:2] != (h, w):
                         frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_CUBIC)
 
                     success = out.write(frame)
                     if success:
                         written += 1
+                    else:
+                        write_failures += 1
+                        if write_failures <= 5:  # Only log first few failures
+                            print(f"[GPU {self.rank}] Failed to write frame {i}")
 
                 out.release()
 
                 # Enhanced error diagnostics
                 if written > 0:
                     file_size = os.path.getsize(temp_path)
-                    print(f"[GPU {self.rank}] Debug: Written {written} frames, file size: {file_size} bytes")
+                    print(
+                        f"[GPU {self.rank}] Debug: Written {written}/{len(frames_buffer)} frames, file size: {file_size} bytes")
 
                     if file_size > 1000:  # Minimum reasonable file size
                         shutil.move(temp_path, out_path)
-                        print(f"[GPU {self.rank}] ✅ Saved {written}/{frame_count} frames")
+                        print(f"[GPU {self.rank}] ✅ Saved {written}/{frame_count} frames to {out_path}")
                     else:
                         print(f"❌ [GPU {self.rank}] Invalid video file - size too small: {file_size} bytes")
                         print(f"    Frame dimensions: {w}x{h}")
                         print(f"    Frames in buffer: {len(frames_buffer)}")
+                        print(f"    Codec used: {selected_codec}")
                         if os.path.exists(temp_path):
                             os.remove(temp_path)
                 else:
                     print(f"❌ [GPU {self.rank}] No frames written successfully")
+                    print(f"    Write failures: {write_failures}")
+                    print(f"    Total frames attempted: {len(frames_buffer)}")
                     if os.path.exists(temp_path):
                         os.remove(temp_path)
 
@@ -417,6 +447,9 @@ class VideoPreprocessor_FANET:
 
     def _process_frame_stream_safe(self, frame_queue: Queue, crop_queue: Queue):
         """Process frame batches with improved parallelism"""
+        total_frames_processed = 0
+        total_crops_generated = 0
+
         while True:
             batch = frame_queue.get()
             if batch is None:
@@ -428,12 +461,21 @@ class VideoPreprocessor_FANET:
             try:
                 with torch.cuda.stream(self.stream):
                     crops = self._process_batch_cuda_safe(batch)
+                    total_frames_processed += len(batch)
                     if crops:
+                        total_crops_generated += len(crops)
                         crop_queue.put(crops)
+                        print(f"[GPU {self.rank}] Batch processed: {len(batch)} frames -> {len(crops)} crops")
+                    else:
+                        print(f"[GPU {self.rank}] Warning: Batch of {len(batch)} frames produced no crops")
             except Exception as e:
                 print(f"⚠️ [GPU {self.rank}] Batch processing error: {e}")
+                import traceback
+                traceback.print_exc()
             finally:
                 frame_queue.task_done()
+
+        print(f"[GPU {self.rank}] Processing summary: {total_frames_processed} frames -> {total_crops_generated} crops")
 
     def _process_batch_cuda_safe(self, frame_batch):
         """Process batch with no lock contention"""
@@ -441,6 +483,8 @@ class VideoPreprocessor_FANET:
             return []
 
         crops = []
+        faces_detected = 0
+        faces_failed = 0
 
         try:
             mem_free = torch.cuda.mem_get_info(self.device)[0] / 1024 ** 3
@@ -473,23 +517,36 @@ class VideoPreprocessor_FANET:
                 fa = self._get_face_alignment()
                 landmarks_batch = fa.get_landmarks_from_batch(frame_batch_tensor)
 
+                # Debug: Check if landmarks are being detected
+                landmarks_found = sum(1 for l in landmarks_batch if l is not None)
+                if landmarks_found == 0:
+                    print(f"[GPU {self.rank}] Warning: No faces detected in batch of {len(landmarks_batch)} frames")
+
                 for j, (frame_tensor, landmarks) in enumerate(zip(frame_batch_tensor, landmarks_batch)):
                     try:
                         if landmarks is None:
+                            faces_failed += 1
                             continue
 
+                        faces_detected += 1
                         frame_np = frame_tensor.permute(1, 2, 0).cpu().numpy().astype(np.uint8)
-                        lip_crop, _ = self.extract_lip_segment(frame_np, landmarks)
+                        lip_crop, coords = self.extract_lip_segment(frame_np, landmarks)
 
                         if lip_crop is not None:
-                            resized_crop = cv2.resize(
-                                lip_crop, (224, 224),
-                                interpolation=cv2.INTER_CUBIC
-                            )
-                            crops.append(resized_crop)
+                            # Verify crop is valid before resizing
+                            if lip_crop.size > 0 and lip_crop.shape[0] > 0 and lip_crop.shape[1] > 0:
+                                resized_crop = cv2.resize(
+                                    lip_crop, (224, 224),
+                                    interpolation=cv2.INTER_CUBIC
+                                )
+                                crops.append(resized_crop)
+                            else:
+                                print(f"[GPU {self.rank}] Invalid lip crop shape: {lip_crop.shape}")
 
                     except Exception as e:
                         print(f"⚠️ Frame processing error: {e}")
+                        import traceback
+                        traceback.print_exc()
                         continue
 
                 del frame_batch_tensor
@@ -505,6 +562,10 @@ class VideoPreprocessor_FANET:
             traceback.print_exc()
         finally:
             gc.collect()
+
+        # Report detection statistics
+        if faces_detected == 0 and faces_failed > 0:
+            print(f"[GPU {self.rank}] No faces detected in entire batch ({faces_failed} frames checked)")
 
         return crops
 
