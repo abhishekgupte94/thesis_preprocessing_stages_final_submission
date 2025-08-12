@@ -334,116 +334,91 @@ class VideoPreprocessor_FANET:
             frame_queue.put(None)
             cap.release()
 
-    def _async_video_writer_safe(self, out_path: str, crop_queue: Queue):
-        """Improved video writer with better codec and error handling"""
-        frames_buffer = []
-        frame_count = 0
-        queue_timeouts = 0
+    def _async_video_writer_safe(self, out_path: str, crop_queue: Queue, src_fps: float = 25.0):
+        writer = None
+        written = 0
+        tmp_dir = self.cache_dir if (self.use_nvme_cache and self.cache_dir) else Path(self.temp_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path = str(tmp_dir / f"tmp_{uuid.uuid4()}.mp4")  # write mp4
 
         try:
-            while True:
-                try:
-                    crops = crop_queue.get(timeout=10)  # Add timeout to detect stalls
-                except:
-                    queue_timeouts += 1
-                    if queue_timeouts > 3:
-                        print(f"[GPU {self.rank}] Warning: No crops received for 30 seconds, ending writer")
-                        break
-                    continue
-
-                if crops is None:
-                    break
-
-                queue_timeouts = 0  # Reset timeout counter
-
-                for crop in crops:
-                    if crop is not None:
-                        frames_buffer.append(crop.copy())
-                        frame_count += 1
-
-                crop_queue.task_done()
-
-            print(f"[GPU {self.rank}] Writer received {frame_count} frames to write")
-
-            if not frames_buffer:
-                print(f"❌ [GPU {self.rank}] No frames to write - frames_buffer is empty")
+            # Wait indefinitely for first item (either crops or sentinel)
+            item = crop_queue.get()
+            if item is None:
+                # Nothing will arrive for this video
+                print(f"[GPU {self.rank}] Writer received sentinel before any crops")
                 return
 
-            if frames_buffer:
-                h, w = frames_buffer[0].shape[:2]
-                print(f"[GPU {self.rank}] Writing video with dimensions: {w}x{h}")
+            # Initialize writer on first non-empty crops list
+            first_frame = None
+            for f in item:
+                if f is not None:
+                    first_frame = f
+                    break
 
-                # Write to NVMe cache first for faster writes
-                if self.use_nvme_cache and self.cache_dir:
-                    temp_path = str(self.cache_dir / f"temp_{uuid.uuid4()}.avi")
-                else:
-                    temp_path = os.path.join(self.temp_dir, f"temp_{uuid.uuid4()}.avi")
-
-                # Use better codec for compatibility and performance
-                # Try multiple codecs in order of preference
-                codecs = [
-                    ('mp4v', cv2.VideoWriter_fourcc(*'mp4v')),
-                    ('XVID', cv2.VideoWriter_fourcc(*'XVID')),
-                    ('MJPG', cv2.VideoWriter_fourcc(*'MJPG'))  # Fallback
-                ]
-
-                out = None
-                selected_codec = None
-                for codec_name, fourcc in codecs:
-                    out = cv2.VideoWriter(temp_path, fourcc, 25.0, (w, h))
-                    if out.isOpened():
-                        selected_codec = codec_name
-                        print(f"[GPU {self.rank}] Using codec: {codec_name}")
+            if first_frame is None:
+                # Keep pulling until we find a real frame or sentinel
+                while True:
+                    item = crop_queue.get()
+                    if item is None:
+                        print(f"[GPU {self.rank}] Writer ended with no frames")
+                        return
+                    for f in item:
+                        if f is not None:
+                            first_frame = f
+                            break
+                    if first_frame is not None:
                         break
-                    out.release()
 
-                if not out or not out.isOpened():
-                    print(f"❌ [GPU {self.rank}] Failed to open video writer with any codec")
-                    return
+            h, w = first_frame.shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            fps = max(1.0, float(src_fps))
+            writer = cv2.VideoWriter(tmp_path, fourcc, fps, (w, h))
+            if not writer.isOpened():
+                print(f"[GPU {self.rank}] ❌ Failed to open writer")
+                return
 
-                written = 0
-                write_failures = 0
-                for i, frame in enumerate(frames_buffer):
-                    if frame.shape[:2] != (h, w):
-                        frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_CUBIC)
+            # Write the first batch (including the first_frame we found)
+            for f in item:
+                if f is not None:
+                    if f.shape[:2] != (h, w):
+                        f = cv2.resize(f, (w, h), interpolation=cv2.INTER_CUBIC)
+                    writer.write(f)
+                    written += 1
 
-                    success = out.write(frame)
-                    if success:
+            # Stream the rest
+            while True:
+                item = crop_queue.get()
+                if item is None:
+                    break
+                for f in item:
+                    if f is not None:
+                        if f.shape[:2] != (h, w):
+                            f = cv2.resize(f, (w, h), interpolation=cv2.INTER_CUBIC)
+                        writer.write(f)
                         written += 1
-                    else:
-                        write_failures += 1
-                        if write_failures <= 5:  # Only log first few failures
-                            print(f"[GPU {self.rank}] Failed to write frame {i}")
-
-                out.release()
-
-                # Enhanced error diagnostics
-                if written > 0:
-                    file_size = os.path.getsize(temp_path)
-                    print(
-                        f"[GPU {self.rank}] Debug: Written {written}/{len(frames_buffer)} frames, file size: {file_size} bytes")
-
-                    if file_size > 1000:  # Minimum reasonable file size
-                        shutil.move(temp_path, out_path)
-                        print(f"[GPU {self.rank}] ✅ Saved {written}/{frame_count} frames to {out_path}")
-                    else:
-                        print(f"❌ [GPU {self.rank}] Invalid video file - size too small: {file_size} bytes")
-                        print(f"    Frame dimensions: {w}x{h}")
-                        print(f"    Frames in buffer: {len(frames_buffer)}")
-                        print(f"    Codec used: {selected_codec}")
-                        if os.path.exists(temp_path):
-                            os.remove(temp_path)
-                else:
-                    print(f"❌ [GPU {self.rank}] No frames written successfully")
-                    print(f"    Write failures: {write_failures}")
-                    print(f"    Total frames attempted: {len(frames_buffer)}")
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
 
         except Exception as e:
             print(f"❌ [GPU {self.rank}] Video writing error: {e}")
-            import traceback
+            import traceback;
             traceback.print_exc()
+        finally:
+            if writer is not None:
+                writer.release()
+
+            if written > 0 and os.path.exists(tmp_path):
+                try:
+                    shutil.move(tmp_path, out_path)
+                    print(f"[GPU {self.rank}] ✅ Saved {written} frames to {out_path}")
+                except Exception as e:
+                    print(f"❌ Move failed: {e}")
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+            else:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                if written == 0:
+                    print(f"❌ [GPU {self.rank}] No frames to write (writer never timed out; it waited properly)")
 
     def _process_frame_stream_safe(self, frame_queue: Queue, crop_queue: Queue):
         """Process frame batches with improved parallelism"""
