@@ -671,16 +671,16 @@ def balanced_chunk_videos(video_paths, num_gpus):
     return chunks
 
 
-# # Usage example:
-# if __name__ == "__main__":
-#     # Example usage
-#     video_list = ["path/to/video1.mp4", "path/to/video2.mp4"]  # Add your video paths
-#     output_directory = "./output_lips"
-#
-#     # Run with default settings (NVMe enabled if available)
-#     parallel_main(
-#         video_paths=video_list,
-#         batch_size=32,  # Increased from 16 for better GPU utilization
-#         output_dir=output_directory,
-#         use_nvme=True
-#     )
+# Usage example:
+if __name__ == "__main__":
+    # Example usage
+    video_list = ["path/to/video1.mp4", "path/to/video2.mp4"]  # Add your video paths
+    output_directory = "./output_lips"
+
+    # Run with default settings (NVMe enabled if available)
+    parallel_main(
+        video_paths=video_list,
+        batch_size=32,  # Increased from 16 for better GPU utilization
+        output_dir=output_directory,
+        use_nvme=True
+    )
