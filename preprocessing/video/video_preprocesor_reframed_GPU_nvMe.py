@@ -84,7 +84,7 @@ class VideoPreprocessor_FANET:
 
     def _setup_nvme_cache(self):
         """
-        Automatically detect and setup NVMe cache with proper locking
+        Automatically detect and setup NVMe cache
         """
         config = load_storage_config()
 
@@ -113,23 +113,14 @@ class VideoPreprocessor_FANET:
                         best_speed = speed
 
         if best_cache:
-            # Create cache directory with proper locking to avoid concurrent access issues
-            cache_lock_file = Path(best_cache) / ".cache_setup.lock"
-            cache_lock_file.parent.mkdir(exist_ok=True, parents=True)
+            # Create GPU-specific cache directory to avoid conflicts
+            self.cache_dir = Path(best_cache) / f"lip_extraction_cache_gpu{self.rank}"
+            self.cache_dir.mkdir(exist_ok=True, parents=True)
 
-            with open(cache_lock_file, 'w') as lock:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-                try:
-                    # Create GPU-specific cache directory to avoid conflicts
-                    self.cache_dir = Path(best_cache) / f"lip_extraction_cache_gpu{self.rank}"
-                    self.cache_dir.mkdir(exist_ok=True, parents=True)
-
-                    print(f"[GPU {self.rank}] ✅ NVMe cache enabled at {self.cache_dir}")
-                    print(f"[GPU {self.rank}]    Speed: {best_speed:.0f} MB/s")
-                finally:
-                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            print(f"[GPU {self.rank}] ✅ NVMe cache enabled at {self.cache_dir}")
+            print(f"[GPU {self.rank}]    Speed: {best_speed:.0f} MB/s")
         else:
-            print(f"[GPU {self.rank}] ⚠️ No suitable NVMe storage found, using direct I/O")
+            print(f"[GPU {self.rank}] ⚠️ No suitable NVMe storage found, falling back to direct I/O")
             self.use_nvme_cache = False
 
     def _cache_videos_batch(self, video_paths: list) -> dict:
