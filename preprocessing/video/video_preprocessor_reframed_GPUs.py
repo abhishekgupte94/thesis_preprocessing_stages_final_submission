@@ -59,9 +59,10 @@ class VideoPreprocessor_FANET:
 
         os.makedirs(self.output_base_dir, exist_ok=True)
 
-        # Initialize face alignment without lock
-        self.fa = None
-        self._init_face_alignment()
+        # Initialize thread-local storage for face alignment
+        self._thread_local = threading.local()
+        self.fa = None  # Remove the global face alignment instance
+        self._init_face_alignment_main_thread()  # Initialize for main thread
 
         # CUDA optimizations
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -83,7 +84,7 @@ class VideoPreprocessor_FANET:
 
     def _setup_nvme_cache(self):
         """
-        Automatically detect and setup NVMe cache
+        Automatically detect and setup NVMe cache with proper locking
         """
         config = load_storage_config()
 
@@ -112,12 +113,21 @@ class VideoPreprocessor_FANET:
                         best_speed = speed
 
         if best_cache:
-            # Create GPU-specific cache directory to avoid conflicts
-            self.cache_dir = Path(best_cache) / f"lip_extraction_cache_gpu{self.rank}"
-            self.cache_dir.mkdir(exist_ok=True, parents=True)
+            # Create cache directory with proper locking to avoid concurrent access issues
+            cache_lock_file = Path(best_cache) / ".cache_setup.lock"
+            cache_lock_file.parent.mkdir(exist_ok=True, parents=True)
 
-            print(f"[GPU {self.rank}] ✅ NVMe cache enabled at {self.cache_dir}")
-            print(f"[GPU {self.rank}]    Speed: {best_speed:.0f} MB/s")
+            with open(cache_lock_file, 'w') as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                try:
+                    # Create GPU-specific cache directory to avoid conflicts
+                    self.cache_dir = Path(best_cache) / f"lip_extraction_cache_gpu{self.rank}"
+                    self.cache_dir.mkdir(exist_ok=True, parents=True)
+
+                    print(f"[GPU {self.rank}] ✅ NVMe cache enabled at {self.cache_dir}")
+                    print(f"[GPU {self.rank}]    Speed: {best_speed:.0f} MB/s")
+                finally:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         else:
             print(f"[GPU {self.rank}] ⚠️ No suitable NVMe storage found, using direct I/O")
             self.use_nvme_cache = False
@@ -174,16 +184,27 @@ class VideoPreprocessor_FANET:
 
         return cached_paths
 
-    def _init_face_alignment(self):
-        """Initialize face alignment without lock for better parallelism"""
+    def _init_face_alignment_main_thread(self):
+        """Initialize face alignment for main thread only"""
         torch.cuda.set_device(self.device)
-        self.fa = face_alignment.FaceAlignment(
-            face_alignment.LandmarksType.TWO_D,
-            device=self.device,
-            face_detector='sfd',
-            flip_input=False
-        )
-        print(f"[GPU {self.rank}] Initialized face alignment")
+        # This will be accessed through _get_face_alignment() for thread safety
+        print(f"[GPU {self.rank}] Initialized face alignment system")
+
+    def _get_face_alignment(self):
+        """Get thread-specific face alignment instance for CUDA thread safety"""
+        if not hasattr(self._thread_local, 'fa'):
+            # Ensure we're in the right CUDA context
+            with torch.cuda.device(self.device):
+                torch.cuda.set_device(self.device)
+                self._thread_local.fa = face_alignment.FaceAlignment(
+                    face_alignment.LandmarksType.TWO_D,
+                    device=self.device,
+                    face_detector='sfd',
+                    flip_input=False
+                )
+                print(
+                    f"[GPU {self.rank}] Created thread-local face alignment for thread {threading.current_thread().name}")
+        return self._thread_local.fa
 
     def __call__(self, video_paths: list[str]) -> None:
         # Pre-cache all assigned videos to NVMe before processing
@@ -457,8 +478,9 @@ class VideoPreprocessor_FANET:
 
                 torch.cuda.synchronize(self.device)
 
-                # No lock needed - each GPU has its own face alignment instance
-                landmarks_batch = self.fa.get_landmarks_from_batch(frame_batch_tensor)
+                # Get thread-safe face alignment instance
+                fa = self._get_face_alignment()
+                landmarks_batch = fa.get_landmarks_from_batch(frame_batch_tensor)
 
                 for j, (frame_tensor, landmarks) in enumerate(zip(frame_batch_tensor, landmarks_batch)):
                     try:
