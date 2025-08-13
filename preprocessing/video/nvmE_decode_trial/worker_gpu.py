@@ -1,4 +1,4 @@
-# worker_from_csv.py
+# worker_gpu.py
 import os, csv, sys
 from pathlib import Path
 import argparse

@@ -99,7 +99,7 @@ def main():
         env["CUDA_VISIBLE_DEVICES"] = str(i)  # pin worker to GPU i
 
         cmd = [
-            sys.executable, "-u", str(ROOT / "main" / "worker_from_csv.py"),
+            sys.executable, "-u", str(ROOT / "main" / "worker_gpu.py"),
             "--csv", str(shard_csv),
             "--out_dir", str(gpu_out_dir),
             "--device", "cuda:0",                         # maps to visible GPU
