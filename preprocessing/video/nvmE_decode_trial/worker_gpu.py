@@ -4,6 +4,21 @@ from pathlib import Path
 import argparse
 from fast_preproc_decord_mouth import process_video_gpu_lips
 
+here = Path(__file__).resolve()
+ROOT = None
+for parent in [here.parent, *here.parents]:
+    if (parent / "data_loader").is_dir():
+        ROOT = parent
+        break
+
+if ROOT is None:
+    raise ImportError(
+        f"Could not find a parent directory containing 'data_loader/' starting from {here}"
+    )
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
