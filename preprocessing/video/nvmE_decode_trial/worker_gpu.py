@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import argparse
-from fast_preproc_decord_mouth import process_video_gpu_lips
+from fast_preproc_decord_for_llps import process_video_gpu_lips
 
 
 
