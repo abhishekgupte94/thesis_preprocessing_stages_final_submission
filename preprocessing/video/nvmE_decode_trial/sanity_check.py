@@ -108,7 +108,7 @@ def run_single_gpu_test(shard_dir, gpu_id, test_videos=5):
 
     # Find worker script
     worker_paths = [
-        ROOT / "worker_gpu.py",
+        ROOT / "preprocessing" / "video"/ "nvmE_decode_trial" / "worker_gpu.py",
         ROOT / "main" / "worker_gpu.py",
         Path("worker_gpu.py"),
         Path("main/worker_gpu.py"),
