@@ -4,8 +4,19 @@ import subprocess
 from pathlib import Path
 import argparse
 
-# Add project root to path
-ROOT = Path(__file__).resolve().parents[3]
+# --- Make sure we add the directory that directly contains `data_loader/` ---
+here = Path(__file__).resolve()
+ROOT = None
+for parent in [here.parent, *here.parents]:
+    if (parent / "data_loader").is_dir():
+        ROOT = parent
+        break
+
+if ROOT is None:
+    raise ImportError(
+        f"Could not find a parent directory containing 'data_loader/' starting from {here}"
+    )
+
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

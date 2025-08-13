@@ -6,19 +6,19 @@ import argparse
 
 # --- Make sure we add the directory that directly contains `data_loader/` ---
 here = Path(__file__).resolve()
-root_with_pkg = None
+ROOT = None
 for parent in [here.parent, *here.parents]:
     if (parent / "data_loader").is_dir():
-        root_with_pkg = parent
+        ROOT = parent
         break
 
-if root_with_pkg is None:
+if ROOT is None:
     raise ImportError(
         f"Could not find a parent directory containing 'data_loader/' starting from {here}"
     )
 
-if str(root_with_pkg) not in sys.path:
-    sys.path.insert(0, str(root_with_pkg))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from data_loader.data_loader_ART import (
     get_project_root,
