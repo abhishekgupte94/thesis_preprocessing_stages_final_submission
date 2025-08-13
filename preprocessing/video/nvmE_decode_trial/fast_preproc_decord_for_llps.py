@@ -3,6 +3,22 @@ import time, subprocess, torch
 import torch.nn.functional as F
 import face_alignment
 from decord import VideoReader, gpu
+import sys
+from pathlib import Path
+here = Path(__file__).resolve()
+ROOT = None
+for parent in [here.parent, *here.parents]:
+    if (parent / "data_loader").is_dir():
+        ROOT = parent
+        break
+
+if ROOT is None:
+    raise ImportError(
+        f"Could not find a parent directory containing 'data_loader/' starting from {here}"
+    )
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # --- NVENC writer ---
 def start_ffmpeg_nvenc_writer(out_path, width, height, fps):
