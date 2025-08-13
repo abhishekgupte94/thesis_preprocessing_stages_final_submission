@@ -1,9 +1,6 @@
 # worker_gpu.py
-import os, csv, sys
+import os, csv
 from pathlib import Path
-import argparse
-from fast_preproc_decord_mouth import process_video_gpu_lips
-
 here = Path(__file__).resolve()
 ROOT = None
 for parent in [here.parent, *here.parents]:
@@ -18,6 +15,11 @@ if ROOT is None:
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+import argparse
+from fast_preproc_decord_mouth import process_video_gpu_lips
+
+
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
